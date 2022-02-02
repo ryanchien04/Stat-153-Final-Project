@@ -1,0 +1,223 @@
+---
+title: 'Predicting the ATTACK Values for LeBron James'
+author: 'Ryan Chien'
+date: '12/15/2020'
+---
+
+```{r, echo=F, include=F}
+library(astsa)
+library(forecast)
+library(knitr)
+bball = read.csv('projectdata_sports.csv')
+```
+
+### Executive Summary
+
+ATTACK is a metric created to measure a player's willingness to "attack the basket" and not settle into taking a jump shot. We have the ATTACK numbers for LeBron James for all of his in-season games from the start of his career until early March 2019. I will construct a model to predict what his ATTACK will be for his next 10 games (his last 10 games of the season). The final model that was selected was a SARIMA(P=0,D=1,Q=1,S=10) model. The final predictions are lower than the average ATTACK value that LeBron averaged over his career, implying that he becomes less aggressive towards the end of the current season and the end of his career. 
+
+### Exploratory Data Analysis
+
+```{r rawdata, fig.cap="Figure 1: ATTACK Time Series, Periodogram of ATTACK Time Series, Boxplot of ATTACK by Year, and Boxplot of ATTACK by Day", out.width='90%', out.height='40%', fig.align='center', fig.asp=0.45, fig.height=7, echo=F}
+time = as.vector(time(bball$Date))
+par(mfrow = c(1, 4))
+plot(time, bball$Attack, type = 'l', ylab = 'ATTACK', main='ATTACK Time Series', xlab='Time (Games since Game #1)')
+acf(bball$Attack, main='ACF of Time Series')
+
+bball$Year = format(as.Date(bball$Date, tryFormats = '%m/%d/%Y'), '%Y')
+bball$Month = format(as.Date(bball$Date, tryFormats = "%m/%d/%Y"), "%m")
+bball$Day = format(as.Date(bball$Date, tryFormats = "%m/%d/%Y"), "%d")
+
+#par(mfrow = c(1, 3))
+boxplot(bball$Attack~Year,data=bball,xlab = "Year", ylab = 'ATTACK', main="ATTACK by Year")
+#boxplot(bball$Attack~Month,data=bball,xlab = "Month", ylab = 'ATTACK', main="ATTACK by Month")
+boxplot(bball$Attack~Day,data=bball,xlab = "Day", ylab = 'ATTACK', main="ATTACK by Day")
+```
+
+First, we'll see if there are any trends, seasonality, or heteroscedasticity in the data. Looking at the raw data it appears to be reasonably homoscedastic, therefore there is no need to apply a variance stabilizing transform. If we look at the periodgram, there are some lags where the autocorrelation exceed the blue 95% bounds, but not eough to deem the significant. So we can conclude there is no seasonality. However, simply looking at just the raw data doesn't lend any information on potential trends. If we take a closer look, we can see that there is a general increase in ATTACK around the middle of the time series. If we look at the boxplot of ATTACK values by year in Figure 1, there is a visible increase (trend) in the middle years of LeBron's career. This might be due to the fact that this was considered the physical prime of LeBron's career, and due to that he was more aggressive in his gameplay. Since that time, his ATTACK statistics have fallen. This is an early indication that the ATTACK predictions for the next 10 games could be lower than what LeBron averaged for his entire career. 
+
+### Models Considered
+
+The first model I'll consider is a first order seasonal difference model with a season being 10 games. The reason why I chose to go with a first order seasonal difference model with a season from the model being every 10 games was because of the pattern in the ATTACK boxplot grouped by day in Figure 1. In that boxplot there seemed to be a seasonal pattern where the ATTACK would increase around every 10 games. The predictions for the LeBron's last 50 games as well as ACF plot for the differencing model are shown in Figure 2. We can see the seasonal differences are approximately stationary. If we look at the resulting ACF plot, there are no significant lags within the predictions for the last 50 games. 
+
+```{r Differencing Model, fig.cap='Figure 2: First Order Seasonal Differencing Model (Season is every 10 games), ACF of the Differenced Data, and Fitted Values of Differenced Signal Model plotted over Raw Time Series for LeBron\'s last 50 games.', out.width='70%', fig.asp = 0.4, fig.height = 70, fig.align='center', echo=F}
+seasonal_diff = diff(bball$Attack, lag = 10)
+differenced_pred = NA
+for(i in 11:length(bball$Attack)) {
+  differenced_pred[i] = mean(seasonal_diff) + bball$Attack[i-10]
+}
+par(mfrow=c(1, 3))
+plot(seasonal_diff, type = 'l', main='Seasonal Differencing Model', xlab='Time (Number of Games from 1st Game)', ylab='Differences', xlim=c(950, 1000))
+acf(seasonal_diff[seq(950, 1000)], main='ACF of Differenced Data')
+plot(bball$Attack, type='l', xlim=c(950, 1000), main='Differencing Fitted Values', xlab='Time (Number of Games from 1st Game)', ylab='ATTACK')
+lines(differenced_pred, col='green', xlim=c(950, 1000))
+```
+
+The second model I considered was a exponential smoothing model with alpha equal 0.01 and taking the previous 20 lags. Each of the weights were normalized by dividing each weight by the sum of all the weights and the first weight is 0. 
+
+\begin{equation}
+Y_{t} = \frac{1}{\sum_{k=1}^{n} (0.01)^{k}} * \sum_{k = 1}^{n} (0.01)^{k} * X_{t - k}
+\end{equation}
+
+It seemed appropriate due to the increasing and decreasing of ATTACK values during LeBron's career thus far. Since we want to model the trend and also be predicing the next 10 games' ATTACK values, it is plausible to use a model that bases its predictions off of past values, which smoothing achieves. Additionally, after testing both equal weight smoothing and binomial smoothing, the fit for the exponential smoothing was the best. The model plotted over the original time series and its residuals for the last 50 games are shown below in Figure 3. The residual plot reflects stationarity with the mean centered around zero and homoscedasticity. 
+
+```{r Filtering Model and Residuals, fig.cap='Figure 3: Exponential Smoothing Model with Alpha = 0.01 (left) and Residual Plot (right)', out.width='70%', fig.asp = 0.4, fig.height=70, fig.align='center', echo=F}
+par(mfrow = c(1, 2))
+plot.ts(bball$Attack, main='Exponential Smoothing Model', xlab='Time (Number of Games from 1st Game)', ylab='ATTACK', xlim=c(950, 1000))
+
+a = .01
+weights =  (a^(1:20)) 
+weights = weights/sum(weights)
+weights = c(0,weights) 
+
+m = filter(bball$Attack,sides = 1,filter=weights)
+lines(m,col=2,lwd=1)
+
+plot(time, m - bball$Attack, type = 'l', xlab='Time (Number of Games from 1st Game)', ylab='Residuals', main='Residual Plot', xlim=c(950, 1000))
+```
+
+### ARMA Model Selection
+
+##### Differencing Model
+
+Now, let's find a suitable ARMA model for the differencing model. First, we'll examine the ACF and PACF plots of the seasonal differenced data. 
+
+```{r, echo=F, results='hide', fig.cap='Figure 4: ACF and PACF plots for the Seasonal Differenced Data', out.width='70%', out.height='70%', fig.align='center', fig.asp=0.5, fig.height=6}
+par(mfrow=c(1,2))
+acf(seasonal_diff, main='ACF of Seasonal Differences', lag.max=50)
+pacf(seasonal_diff, main='PACF of Seasonal Differences', lag.max=50)
+```
+
+###### **Differencing Model with MSARMA(P=0,Q=1,S=10)**
+If we look at the ACF and PACF plots of the seasonal differenced data in Figure 4, we see that there is a clear single spike at lag 10 in the ACF plot and non-significant lags following that. In the PACF plot, we can see that the partial autocorrelations are exponentially decreasing as the lags increase. Putting both of these observations together, we can conclude that a potential ARMA model is **MSARMA(P=0,Q=1,S=10)**. If we look at the standardized residual plot in Figure 5, the values appear stationary as they follow the "shoe-box" test and are centered at 0. Additionally, the normal Q-Q plot in Figure 5 shows that the standardized residuals are all relatively normally distributed. Next, if we look at the ACF of the residuals in Figure 5, none of them exceed the 95% confidence bounds, further indicating the stationarity. However, if we look at the Ljung-Box statistic plot in Figure 5, the early lags reflect insignificant p-values for the lags, but from lag 7 onwards, the lags become all significant. All of these diagnostic plots indicate that is a good fit, but not a perfect fit because of the large number of significant lags from the Ljung-Box statistic plot.
+
+```{r, echo=F, results='hide', fig.cap='Figure 5: Diagnostics for MSARMA(P=0,Q=1,S=10) model for Seasonal Differenced Data', fig.align='center', out.width='70%', out.height='70%', fig.asp=0.5, fig.width=10}
+arma_mod1 = sarima(seasonal_diff, p=0, d=0, q=0, P=0, D=0, Q=1,S=10)
+```
+
+###### **Differencing Model with MSARMA(p=1,q=1,S=10)**
+Another model that we can choose for the differenced data can be generated based off the auto.arima function, which will select a model by minimizing conditional sum of squares. The auto.arima function gives us a **MSARMA(p=1,q=1,S=10)** model. If we look at the standardized residual plot in Figure 6, similarly to the MSARMA(P=0,Q=1,S=10) model, the values appear stationary as they follow the "shoe-box" test and are centered at 0. The normal Q-Q plot in Figure 6 shows that the standardized residuals are all normally distributed. Next, if we look at the ACF of the residuals in Figure 6, it has a significant spike at lag 10, indicating that there isn't perfect stationarity. Finally, and similarly to the prior model, the Ljung-Box statistic plot in Figure 6 also shows that all the lags after lag 7 reflect insignificant p-values. However, the p-values for the earlier lags aren't as high as they are in first model. Due to this and the fact that there is a significant ACF spike at lag 10 both may potentially indicate that the MSARMA(P=0,Q=1,S=10) is the better ARMA model for the differencing model. 
+
+```{r, echo=F, results='hide', fig.cap='Figure 6: Diagnostics for MSARMA(p=1,q=1,S=10) model for Seasonal Differenced Data', fig.align='center', fig.asp=0.6, out.width='70%', out.height='70%', fig.asp=0.5, fig.width=10}
+arma_mod2 = sarima(seasonal_diff, p=1, d=0, q=1, P=0, D=0, Q=0, S=10)
+```
+
+##### Exponential Smoothing Model
+
+Next, let's find an ARMA model for the exponential smoothing model. Below are the plots of the residuals, as well as the ACF and PACF plots for the residuals. 
+
+```{r, echo=F, fig.cap='Figure 7: Residual Plot of Exponential Smoothing Model and the ACF and PACF Plots of the Residuals', fig.align='center', out.width='70%', out.height='70%', fig.height=6, fig.asp=0.5}
+exp_smooth_resid = m - bball$Attack
+par(mfrow=c(1,3))
+plot(time, exp_smooth_resid, type = 'l', xlab='Time (Number of Games from 1st Game)', ylab='Residuals', main='Residual Plot')
+acf(exp_smooth_resid, ylim=c(-1, 1), na.action=na.pass, main='ACF of Residuals')
+pacf(exp_smooth_resid, ylim=c(-1, 1), na.action=na.pass, main='PACF of Residuals')
+```
+
+```{r, include=F, echo=F, fig.show='hide'}
+arma_mod3 = sarima(exp_smooth_resid, p=0, d=0, q=1, P=0, D=0, Q=0, S=0)
+arma_mod4 = sarima(exp_smooth_resid, p=1, d=0, q=1, P=0, D=0, Q=0, S=0)
+```
+
+###### **Exponential Smoothing with MA(1)**
+If we look at the ACF and PACF plots for the residuals of the exponential smoothing model in Figure 7, there is a single spike at lag 1 in the ACF plot and exponentially decreasing PACF values in the PACF plot. This information would suggest that we should use a **ARMA(p=0,q=1) or MA(1)** model. In Figure 8, we can see the MA(1) model's theoretical ACF and PACF values in the red triangles laid over the sample ACF/PACF values generated by the residuals of the exponential smoothing model. The theoretical values are very accurate and close to the sample values, so this would indicate that an MA(1) model would be a good ARMA model fit.
+
+###### **Exponential Smoothing with ARMA(1,1)**
+For the second ARMA model, I chose to use the auto arima function once again to determine the best model. The auto.arima function will (similarly to the differencing model) select a model by minimizing conditional sum of squares. The auto.arima function returned the **ARMA(p=1,q=1)** model. In Figure 8 we can also see the ARMA(1,1) model shows identical theoretical ACF and PACF values to the MA(1) model, with the theoretical values overlaid as blue cirlces. Since the two ACF/PACF plots look the same, we can conclude that both the MA(1) and ARMA(1,1) are both good fits and will most likely yield similar results. 
+
+```{r, echo=F, results='hide', fig.cap='Figure 8: Sample ACF and PACF Plots with Theoretical Autocorrelations Overlay for MA(1) in red triangles and ARMA(1,1) in blue circles', fig.align='center', out.width='70%', out.height='70%', fig.asp=0.5, fig.width=8}
+a2 = ARMAacf(ma = c(arma_mod3$fit$coef[1], rep(0, 11)))
+p2 = ARMAacf(ma = c(arma_mod3$fit$coef[1], rep(0, 11)), pacf=TRUE)
+a1 = ARMAacf(ar = c(arma_mod4$fit$coef[1], rep(0, 11)), ma = c(arma_mod4$fit$coef[2], rep(0, 11)))
+p1 = ARMAacf(ar = c(arma_mod4$fit$coef[1], rep(0, 11)), ma = c(arma_mod4$fit$coef[2], rep(0, 11)), pacf=TRUE)
+
+par(mfrow=c(1,2))
+acf(exp_smooth_resid, ylim=c(-1, 1), na.action=na.pass, lag.max=13, main='ACF of Exponential Residuals')
+points(0:13, a2, col='red', pch=2)
+points(0:13, a1, col='blue', lwd=1)
+
+pacf(exp_smooth_resid, ylim=c(-1, 1), na.action=na.pass, lag.max=13, main='PACF of Exponential Residuals')
+points(p1, col='red', pch=2)
+points(p2, col='blue', lwd=1)
+```
+
+
+### Model Comparison and Selection 
+
+We now have 4 models, 2 signal models with 2 ARMA models each:
+
+1) Seasonal Difference with Lag 10 games + MSARMA(P=0,Q=1,S=10) = SARIMA(P=0,D=1,Q=1,S=10)
+2) Seasonal Difference with Lag 10 games + MSARMA(p=1,q=1,S=10) = SARIMA(p=1,q=1,D=1,S=10)
+3) exponential smoothing + ARMA(p=0,q=1)
+4) exponential smoothing + ARMA(p=1,q=1)
+
+Let's compare these 4 models with cross validation, measured with the sum of squared errors (SSE). Cross validation was performed on 40 test set intervals of 10 of LeBron's games, more specifically the 960th through the 1000th game. I used all the games prior to each set to train each model and used them to compute the squared error for that set of 10 games. I then summed together all of the squared errors to find the SSE for each model. The model with the lowest SSE would be the deemed the best model.
+
+```{r, echo=F, include=F, fig.show='hide'}
+# wanted to show this part to see if anything needed to be corrected (if you could leave it in the feedback it'd be helpful!)
+attack_ts = ts(bball$Attack)
+
+start <- 960
+end <- 1000
+sum_squared_errors <- c(0,0,0,0)
+for (i in start:end) {
+  train_set <- window(attack_ts, end=i-0.01)
+  test_set <- window(attack_ts, start=i, end=i+9)
+  #
+  forecast1 <- sarima.for(train_set, n.ahead=10, p=0, d=0, q=0, P=0, D=1, Q=1, S=10)$pred
+  forecast2 <- sarima.for(train_set, n.ahead=10, p=1, d=0, q=1, P=0, D=1, Q=0, S=10)$pred
+  forecast3 <- m + sarima.for(train_set, n.ahead=10, p=0, d=0, q=1, P=0, D=0, Q=0, S=0)$pred
+  forecast4 <- m + sarima.for(train_set, n.ahead=10, p=1, d=0, q=1, P=0, D=0, Q=0, S=0)$pred
+  #
+  sum_squared_errors[1] = sum_squared_errors[1] + sum((forecast1 - test_set)^2)
+  sum_squared_errors[2] = sum_squared_errors[2] + sum((forecast2 - test_set)^2)
+  sum_squared_errors[3] = sum_squared_errors[3] + sum((forecast3 - test_set)^2)
+  sum_squared_errors[4] = sum_squared_errors[4] + sum((forecast4 - test_set)^2)
+}
+```
+
+```{r, echo=F}
+SSE_tbl = data.frame('Model' = c('SARIMA(P=0,D=1,Q=1,S=10)', 
+                                        'SARIMA(p=1,d=0,q=1,D=1,S=10)', 
+                                        'exponential smoothing + ARMA(p=0,q=1)', 
+                                        'exponential smoothing + ARMA(p=1,q=1)'), 
+                     'Sum of Squared Errors' = sum_squared_errors)
+kable(SSE_tbl,caption = "Table 1: Cross-validated sum of squared prediction error for the four models under consideration")
+```
+
+As we can see in Table 1, the order from best to worst model according to cross validation is the following: the SARIMA(P=0,D=1,Q=1,S=10) model, the SARIMA(p=1,d=0,q=1,D=1,S=10) model, the exponential smoothing + ARMA(p=0,q=1) model, and exponential smoothing + ARMA(p=1,q=1) model. Therefore we can conclude that the **SARIMA(P=0,D=1,Q=1,S=10) model** is the best model by cross validation since it has the lowest sum of squared errors. 
+
+### Results
+
+Based off the cross validation results, we found the best model for predicting LeBron's ATTACK value to be the **SARIMA(P=0,D=1,Q=1,S=10)** model: 
+
+\begin{equation}
+\nabla^{1}_{10}Y_{t} = \Theta(B^{10})W_{t} 
+\end{equation}
+
+\begin{equation}
+Y_{t} = W_{t} - 0.9516*W_{t-10} + Y_{t-10}
+\end{equation}
+
+Where Y_t is LeBron's ATTACK Time Series, W_t is White Noise (with mean 0 and sigma^2_W 0.06506), and B^10 represents a backshift operator of 10 lags. 
+
+Below in Table 2 are the parameters for the model as well as their mathematical representations. As we can see, there is only one parameter for our model and the standard error is very low, but so is the p-value. This could be misleading since although the SE would suggest the parameter estimate is accurate, the p-value would suggest it is not. 
+```{r, echo=F, fig.cap='Figure 9: Table for coefficients for SARIMA(P=0,D=1,Q=1,S=10) model', fig.align='center'}
+kable(arma_mod1$ttable, caption='Table 2: Parameter Estimates for SARIMA(P=0,D=1,Q=1,S=10) model')
+```
+
+$$ \Theta_{10} = -0.9516$$
+
+Finally here is the forecast for the next 10 games for LeBron James' ATTACK stats in Figure 10: 
+```{r, echo=F, results=F, fig.cap='Figure 10: Plot for the LeBron\'s ATTACK predictions for the next 10 games', fig.align='center', out.width='70%', out.height='70%', fig.asp=0.5, fig.height=50}
+ATTACK = bball$Attack
+predictions = sarima.for(ATTACK, n.ahead=10, p=0, d=0, q=0, P=0, D=1, Q=1, S=10)$pred
+```
+
+The predictions indicate that LeBron's next 10 games will be less than the average ATTACK statistic he's had over his career (which is around 0.2177482) and will average an ATTACK value of 0.1291088. This would indicate that LeBron most likely won't attack the basket as frequently and will attempt a majority jumpshots. If we also look at the prediction intervals, the lowest possible ATTACK value could be the same as the lowest ATTACK for LeBron's career, but the highest will not match the highest from his career. Overall, as predicted in the EDA, as LeBron ages, he loses athelticism and as a result the aggression and energy necessary to attack the basket with frequency. As a result we can expect a slight decline in ATTACK over LeBron's next 10 games.  
+
+
+
+
+
+
+
